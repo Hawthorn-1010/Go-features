@@ -43,4 +43,5 @@ func main() {
 
 	// 实用相同上下文执行操作2
 	operation2(ctx)
+
 }
