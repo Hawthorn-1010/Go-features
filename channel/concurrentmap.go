@@ -1,6 +1,7 @@
 package channel
 
 import (
+	"context"
 	"errors"
 	"sync"
 	"time"
@@ -18,17 +19,34 @@ var (
 	ErrNotFount = errors.New("not found")
 )
 
+type MyChan struct {
+	sync.Once
+	channel chan struct{}
+}
+
+func NewMyChan() *MyChan {
+	return &MyChan{
+		channel: make(chan struct{}),
+	}
+}
+
+func (ch *MyChan) Close() {
+	ch.Do(func() {
+		close(ch.channel)
+	})
+}
+
 // MyConcurrentMap 是一个面向高并发的 Map 结构
 type MyConcurrentMap struct {
 	sync.Mutex
 	myMap     map[int]int
-	keyToChan map[int]chan struct{}
+	keyToChan map[int]*MyChan
 }
 
 func NewMyConcurrentMap() *MyConcurrentMap {
 	return &MyConcurrentMap{
 		myMap:     make(map[int]int), // 在初始化方法中使用 make 初始化 map
-		keyToChan: make(map[int]chan struct{}),
+		keyToChan: make(map[int]*MyChan),
 	}
 }
 
@@ -43,7 +61,22 @@ func (m *MyConcurrentMap) Put(k, v int) {
 	if !ok {
 		return
 	}
-	channel <- struct{}{}
+
+	// channel <- struct{}{}
+	// 不能只放入一个，可能有获取同一个key的多个goroutine等待被唤醒
+	// 使用close(channel)，读取该channel的goroutine都会被唤醒，写该goroutine的都会panic
+
+	// 1.
+	//select {
+	//// 能读到，说明channel已经关闭
+	//case <-channel:
+	//	return
+	//default:
+	//	close(channel)
+	//}
+
+	// 2. 面向对象 sync.Once
+	channel.Close()
 }
 
 // Get 方法用于查询 Map 中的值，若键不存在则阻塞等待直到被放入或者超时
@@ -54,27 +87,48 @@ func (m *MyConcurrentMap) Get(k int, maxWaitingDuration time.Duration) (int, err
 		return value, nil
 	}
 
-	m.keyToChan[k] = make(chan struct{})
+	channel, ok := m.keyToChan[k]
+	// 当前key没有读取的chan再make新的
+	if !ok {
+		channel = NewMyChan()
+		m.keyToChan[k] = channel
+	}
+
+	// 使用context进行超时控制
+	tCtx, cancel := context.WithTimeout(context.Background(), maxWaitingDuration)
+	defer cancel()
+
 	// 挂起前解锁，防止对m的其他操作阻塞
 	m.Unlock()
 	// 挂起
-	<-m.keyToChan[k]
-
-	valueChannel := make(chan int, 1)
-	go func() {
-		for {
-			if value, ok := m.myMap[k]; ok {
-				valueChannel <- value
-			}
-		}
-	}()
-	for {
-		select {
-		case value := <-valueChannel:
-			return value, nil
-		case <-time.After(maxWaitingDuration):
-			return 0, ErrNotFount
-		}
+	select {
+	case <-tCtx.Done():
+		return -1, tCtx.Err()
+	case <-channel.channel:
 	}
-	return 0, ErrNotFount
+
+	// 获取放入的数据
+	m.Lock()
+	v := m.myMap[k]
+	m.Unlock()
+
+	return v, nil
+
+	//valueChannel := make(chan int, 1)
+	//go func() {
+	//	for {
+	//		if value, ok := m.myMap[k]; ok {
+	//			valueChannel <- value
+	//		}
+	//	}
+	//}()
+	//for {
+	//	select {
+	//	case value := <-valueChannel:
+	//		return value, nil
+	//	case <-time.After(maxWaitingDuration):
+	//		return 0, ErrNotFount
+	//	}
+	//}
+	//return 0, ErrNotFount
 }
