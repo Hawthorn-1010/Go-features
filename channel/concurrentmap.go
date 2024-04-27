@@ -1,8 +1,7 @@
-package main
+package channel
 
 import (
 	"errors"
-	"fmt"
 	"sync"
 	"time"
 )
@@ -21,28 +20,45 @@ var (
 
 // MyConcurrentMap 是一个面向高并发的 Map 结构
 type MyConcurrentMap struct {
-	myMap map[int]int
-	mu    sync.Mutex
+	sync.Mutex
+	myMap     map[int]int
+	keyToChan map[int]chan struct{}
 }
 
 func NewMyConcurrentMap() *MyConcurrentMap {
 	return &MyConcurrentMap{
-		myMap: make(map[int]int), // 在初始化方法中使用 make 初始化 map
+		myMap:     make(map[int]int), // 在初始化方法中使用 make 初始化 map
+		keyToChan: make(map[int]chan struct{}),
 	}
 }
 
 // Put 方法用于向 Map 中插入键值对
 func (m *MyConcurrentMap) Put(k, v int) {
-	m.mu.Lock()
+	m.Lock()
+	defer m.Unlock()
 	m.myMap[k] = v
-	m.mu.Unlock()
+
+	// 判断是否有等待该key的channel
+	channel, ok := m.keyToChan[k]
+	if !ok {
+		return
+	}
+	channel <- struct{}{}
 }
 
 // Get 方法用于查询 Map 中的值，若键不存在则阻塞等待直到被放入或者超时
 func (m *MyConcurrentMap) Get(k int, maxWaitingDuration time.Duration) (int, error) {
+	m.Lock()
 	if value, ok := m.myMap[k]; ok {
+		m.Unlock()
 		return value, nil
 	}
+
+	m.keyToChan[k] = make(chan struct{})
+	// 挂起前解锁，防止对m的其他操作阻塞
+	m.Unlock()
+	// 挂起
+	<-m.keyToChan[k]
 
 	valueChannel := make(chan int, 1)
 	go func() {
@@ -61,11 +77,4 @@ func (m *MyConcurrentMap) Get(k int, maxWaitingDuration time.Duration) (int, err
 		}
 	}
 	return 0, ErrNotFount
-}
-
-func main() {
-	mmap := NewMyConcurrentMap()
-	mmap.Put(1, 2)
-	value, err := mmap.Get(2, 5*time.Second)
-	fmt.Println(value, err)
 }
