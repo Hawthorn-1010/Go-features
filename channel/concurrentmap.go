@@ -15,6 +15,10 @@ import (
 (4) 写出真实代码， 不能有死锁或者 panic 风险。
 */
 
+/*
+1. 考虑并发安全 2. 如何唤醒所有goroutine：close(chan) 3. 防止重复close channel造成panic
+*/
+
 var (
 	ErrNotFount = errors.New("not found")
 )
